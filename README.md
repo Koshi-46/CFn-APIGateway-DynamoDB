@@ -12,4 +12,4 @@ curl https://********.execute-api.<region>.amazonaws.com/items
 curl https://********.execute-api.<region>.amazonaws.com/items/<id>
 
 ### 項目を削除する
-curl -X "DELETE" curl https://********.execute-api.<region>.amazonaws.com/items/<id>
+curl -X "DELETE" curl https://********.execute-api.{region}.amazonaws.com/items/{id}
