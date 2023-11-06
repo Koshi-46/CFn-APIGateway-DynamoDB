@@ -3,13 +3,13 @@
 
 ## 使い方
 ### 項目の作成または更新
-curl -X "PUT" -H "Content-Type: application/json" -d "{\"id\": \"123\", \"price\": 12345, \"name\": \"myitem\"}" https://********.execute-api.<region>.amazonaws.com/items
+curl -X "PUT" -H "Content-Type: application/json" -d "{\"id\": \"123\", \"price\": 12345, \"name\": \"myitem\"}" https://********.execute-api.{region}.amazonaws.com/items
 
 ### すべての項目を取得する
-curl https://********.execute-api.<region>.amazonaws.com/items
+curl https://********.execute-api.{region}.amazonaws.com/items
 
 ### 1つの項目を取得する
-curl https://********.execute-api.<region>.amazonaws.com/items/<id>
+curl https://********.execute-api.{region}.amazonaws.com/items/{id}
 
 ### 項目を削除する
 curl -X "DELETE" curl https://********.execute-api.{region}.amazonaws.com/items/{id}
