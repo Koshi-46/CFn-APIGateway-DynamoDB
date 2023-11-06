@@ -1,0 +1,282 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Building a CRUD API using Lambda and DynamoDB"
+Metadata:
+  "AWS::CloudFormation::Interface":
+    ParameterGroups:
+      - Label:
+          default: DynamoDB Table
+        Parameters:
+          - TableName
+          - CapacityMode
+          # - ProjectionType
+      - Label:
+          default: Lambda
+        Parameters:
+          - Architecture
+          - Runtime
+          - Handler
+      - Label:
+          default: API Gateway
+        Parameters:
+          - AuthorizationType
+          - IntegrationType
+
+
+Parameters:
+  # DynamoDB
+  TableName:
+    Type: String
+    Default: crud-items
+  CapacityMode:
+    Description: "PROVISIONED | PAY_PER_REQUEST"  #オンデマンドモードの場合は"ProvisionedThroughput"を使用しない
+    Type: String
+    Default: PAY_PER_REQUEST
+  # ProjectionType:
+  #   Description:  "KEYS_ONLY | INCLUDE | ALL"
+  #   Type: String
+  #   Default: INCLUDE
+
+  # Lambda
+  Architecture:
+    Type: String
+    Description: "arm64 | x86_64"
+    Default: x86_64
+  Runtime:
+    Type: String
+    Default: nodejs18.x
+  Handler:
+    Type: String
+    Description: "FileName.FunctionName"
+    Default: index.handler
+
+  # API Gateway
+  AuthorizationType:
+    # CUSTOM（Lambdaオーソライザー）"
+    Description: "AWS_IAM | CUSTOM | JWT | NONE"
+    Type: String
+    Default: NONE
+  IntegrationType:
+    # AWS（Lambdaカスタム統合） | AWS_PROXY（Lambdaプロキシ統合）"
+    Description: "HTTP | HTTP_PROXY | AWS | AWS_PROXY | MOCK"
+    Type: String
+    Default: AWS_PROXY
+  # ConnectionType:
+  #   Description: "INTERNET | VPC_LINK"
+  #   Type: String
+  #   Default: INTERNET
+
+
+
+Resources:
+# ------------------------------------------------------------#
+#  IAM Role
+# ------------------------------------------------------------#
+  # LambdaがDynamoDBと対話するためのロール
+  DynamoDBSourceRole:
+    Type: AWS::IAM::Role
+    DeletionPolicy: Delete
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+      Policies:
+        - PolicyName: LambdaDynamoDBPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:*
+                Resource: "*"
+
+
+
+#-----------------------------------------------------------------------------
+# DynamoDB Table
+#-----------------------------------------------------------------------------
+  DynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref TableName
+      BillingMode: !Ref CapacityMode
+      AttributeDefinitions:
+        - AttributeName: "id"
+          AttributeType: "S"
+      KeySchema: # HASH-パーティションキー RANGE-ソートキー
+        - AttributeName: "id"
+          KeyType: "HASH"
+      PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: false
+      # TimeToLiveSpecification:
+      #   AttributeName: sample-TTL
+      #   Enabled: true
+      DeletionProtectionEnabled: false
+
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+
+
+
+# ------------------------------------------------------------#
+#  Lambda
+# ------------------------------------------------------------#
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: CRUD-Function
+      Architectures:
+        - !Ref Architecture
+      Handler: !Ref Handler
+      Role: !GetAtt DynamoDBSourceRole.Arn
+      Runtime: !Ref Runtime
+      Code:
+        ZipFile: |
+          import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+          import {
+            DynamoDBDocumentClient,
+            ScanCommand,
+            PutCommand,
+            GetCommand,
+            DeleteCommand,
+          } from "@aws-sdk/lib-dynamodb";
+
+          const client = new DynamoDBClient({});
+
+          const dynamo = DynamoDBDocumentClient.from(client);
+
+          const tableName = "crud-items";
+
+          export const handler = async (event, context) => {
+            let body;
+            let statusCode = 200;
+            const headers = {
+              "Content-Type": "application/json",
+            };
+
+            try {
+              switch (event.routeKey) {
+                case "DELETE /items/{id}":
+                  await dynamo.send(
+                    new DeleteCommand({
+                      TableName: tableName,
+                      Key: {
+                        id: event.pathParameters.id,
+                      },
+                    })
+                  );
+                  body = `Deleted item ${event.pathParameters.id}`;
+                  break;
+                case "GET /items/{id}":
+                  body = await dynamo.send(
+                    new GetCommand({
+                      TableName: tableName,
+                      Key: {
+                        id: event.pathParameters.id,
+                      },
+                    })
+                  );
+                  body = body.Item;
+                  break;
+                case "GET /items":
+                  body = await dynamo.send(
+                    new ScanCommand({ TableName: tableName })
+                  );
+                  body = body.Items;
+                  break;
+                case "PUT /items":
+                  let requestJSON = JSON.parse(event.body);
+                  await dynamo.send(
+                    new PutCommand({
+                      TableName: tableName,
+                      Item: {
+                        id: requestJSON.id,
+                        price: requestJSON.price,
+                        name: requestJSON.name,
+                      },
+                    })
+                  );
+                  body = `Put item ${requestJSON.id}`;
+                  break;
+                default:
+                  throw new Error(`Unsupported route: "${event.routeKey}"`);
+              }
+            } catch (err) {
+              statusCode = 400;
+              body = err.message;
+            } finally {
+              body = JSON.stringify(body);
+            }
+
+            return {
+              statusCode,
+              body,
+              headers,
+            };
+          };
+
+
+
+# ------------------------------------------------------------#
+# API Gateway HTTP（V2）
+# ------------------------------------------------------------#
+  # API
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: crudApi
+      ProtocolType: HTTP
+
+  # Integration
+  HttpApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: !Ref IntegrationType
+      IntegrationUri: !GetAtt LambdaFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  # Route
+  HttpApiGetItemsIdRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: GET /items/{id}
+      AuthorizationType: !Ref AuthorizationType
+      Target: !Sub "integrations/${HttpApiIntegration}"
+
+  HttpApiGetItemsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: GET /items
+      AuthorizationType: !Ref AuthorizationType
+      Target: !Sub "integrations/${HttpApiIntegration}"
+
+  HttpApiPutItemsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: PUT /items
+      AuthorizationType: !Ref AuthorizationType
+      Target: !Sub "integrations/${HttpApiIntegration}"
+
+  HttpApiDeleteItemsIdRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: DELETE /items/{id}
+      AuthorizationType: !Ref AuthorizationType
+      Target: !Sub "integrations/${HttpApiIntegration}"
+
+  # Stage
+  HttpApiDefaultStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: "$default"
+      AutoDeploy: true
